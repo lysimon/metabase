@@ -36,6 +36,89 @@
                               (hsql/raw "INTERVAL '1 second'")))
     :milliseconds (recur (hx// expr 1000) :seconds)))
 
+(defn- describe-database
+  "Custom implementation of `describe-database` for Redshift."
+  [database]
+  {:tables (set (for [fk (jdbc/query (sql/db->jdbc-connection-spec database)
+                              ["SELECT DISTINCT table_name,table_schema
+                                      FROM svv_columns
+                                      WHERE table_schema NOT IN ('pg_internal','pg_catalog','information_schema');"])]
+           {
+            :name     (:table_name fk)
+            :schema   (:table_schema fk)
+           }))})
+
+(defn- column->base-type
+  "Mappings for Redshift type goes here
+   Same as Postgresql + types for redshift spectrum as well
+   TODO: Reduce to https://docs.aws.amazon.com/redshift/latest/dg/c_Supported_data_types.html ?"
+  [column-type]
+  (
+  {:bigint        :type/BigInteger
+   :bigserial     :type/BigInteger
+   :bit           :type/*
+   :bool          :type/Boolean
+   :boolean       :type/Boolean
+   :box           :type/*
+   :bpchar        :type/Text ; "blank-padded char" is the internal name of "character"
+   :bytea         :type/*    ; byte array
+   :cidr          :type/Text ; IPv4/IPv6 network address
+   :circle        :type/*
+   :citext        :type/Text ; case-insensitive text
+   :date          :type/Date
+   :decimal       :type/Decimal
+   :double        :type/Decimal        ; Redshift Spectrum
+   :float         :type/Float
+   :float4        :type/Float
+   :float8        :type/Float
+   :geometry      :type/*
+   :inet          :type/IPAddress
+   :int           :type/Integer
+   :integer       :type/Integer         ; Redshift Spectrum
+   :int2          :type/Integer
+   :int4          :type/Integer
+   :int8          :type/BigInteger
+   :interval      :type/*               ; time span
+   :json          :type/Text
+   :jsonb         :type/Text
+   :line          :type/*
+   :lseg          :type/*
+   :macaddr       :type/Text
+   :money         :type/Decimal
+   :nvarchar      :type/Text
+   :numeric       :type/Decimal
+   :path          :type/*
+   :pg_lsn        :type/Integer         ; PG Log Sequence #
+   :point         :type/*
+   :real          :type/Float
+   :serial        :type/Integer
+   :serial2       :type/Integer
+   :serial4       :type/Integer
+   :serial8       :type/BigInteger
+   :smallint      :type/Integer
+   :smallserial   :type/Integer
+   :string        :type/Text           ; Redshift Spectrum
+   :text          :type/Text
+   :time          :type/Time
+   :timetz        :type/Time
+   :timestamp     :type/DateTime
+   :timestamptz   :type/DateTime
+   :tinyint       :type/Integer        ; Redshift Spectrum
+   :tsquery       :type/*
+   :tsvector      :type/*
+   :txid_snapshot :type/*
+   :uuid          :type/UUID
+   :varbit        :type/*
+   :varchar       :type/Text
+   :xml           :type/Text
+   (keyword "bit varying")                :type/*
+   (keyword "character varying")          :type/Text
+   (keyword "double precision")           :type/Float
+   (keyword "time with time zone")        :type/Time
+   (keyword "time without time zone")     :type/Time
+   (keyword "timestamp with timezone")    :type/DateTime
+   (keyword "timestamp without timezone") :type/DateTime}  (keyword (clojure.string/replace (name column-type) #"\([0-9]+\)" "")))) ;; Removing (number) for varchar
+
 ;; The Postgres JDBC .getImportedKeys method doesn't work for Redshift, and we're not allowed to access
 ;; information_schema.constraint_column_usage, so we'll have to use this custom query instead
 ;;
@@ -80,6 +163,7 @@
   driver/IDriver
   (merge (sql/IDriverSQLDefaultsMixin)
          {:date-interval            (u/drop-first-arg date-interval)
+          :describe-database        (u/drop-first-arg describe-database)
           :describe-table-fks       (u/drop-first-arg describe-table-fks)
           :details-fields           (constantly (ssh/with-tunnel-config
                                                   [{:name         "host"
@@ -110,6 +194,7 @@
   (merge postgres/PostgresISQLDriverMixin
          {:connection-details->spec  (u/drop-first-arg connection-details->spec)
           :current-datetime-fn       (constantly :%getdate)
+          :column->base-type         (u/drop-first-arg column->base-type)
           :set-timezone-sql          (constantly "SET TIMEZONE TO %s;")
           :unix-timestamp->timestamp (u/drop-first-arg unix-timestamp->timestamp)}
          ;; HACK ! When we test against Redshift we use a session-unique schema so we can run simultaneous tests
